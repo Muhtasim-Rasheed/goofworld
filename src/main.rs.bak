@@ -1,0 +1,68 @@
+use macroquad::prelude::*;
+
+#[macroquad::main("3D")]
+async fn main() {
+    let mut camera = Camera3D {
+        position: vec3(0., 10., 10.),
+        up: vec3(0., 1., 0.),
+        target: vec3(0., 0., 0.),
+        ..Default::default()
+    };
+
+    loop {
+        clear_background(LIGHTGRAY);
+
+        // Going 3d!
+
+        set_camera(&camera);
+
+        draw_grid(20, 1., BLACK, GRAY);
+
+        draw_cube(vec3(0., 1., -6.), vec3(2., 2., 2.), None, DARKGREEN);
+        draw_cube(vec3(0., 1., 6.), vec3(2., 2., 2.), None, DARKBLUE);
+        draw_cube(vec3(2., 1., 2.), vec3(2., 2., 2.), None, YELLOW);
+        draw_cube(vec3(2., 0., -2.), vec3(0.4, 0.4, 0.4), None, BLACK);
+
+        draw_sphere(vec3(-8., 0., 0.), 1., None, BLUE);
+
+        if is_key_down(KeyCode::Up) {
+            // Move camera forward in the direction it's looking
+            let forward = Vec3::from(camera.target - camera.position).normalize();
+            camera.position += forward * 0.2;
+        }
+        if is_key_down(KeyCode::Down) {
+            // Move camera backward
+            let forward = Vec3::from(camera.target - camera.position).normalize();
+            camera.position -= forward * 0.2;
+        }
+        if is_key_down(KeyCode::Right) {
+            // Move camera to the left
+            let forward = Vec3::from(camera.target - camera.position).normalize();
+            let right = Vec3::from(camera.up.cross(forward)).normalize();
+            camera.position -= right * 0.2;
+        }
+        if is_key_down(KeyCode::Left) {
+            // Move camera to the right
+            let forward = Vec3::from(camera.target - camera.position).normalize();
+            let right = Vec3::from(camera.up.cross(forward)).normalize();
+            camera.position += right * 0.2;
+        }
+
+        if is_key_down(KeyCode::Space) {
+            // Move camera up
+            camera.position.y += 0.2;
+        }
+
+        if is_key_down(KeyCode::LeftShift) {
+            // Move camera down
+            camera.position.y -= 0.2;
+        }
+
+        // Back to screen space, render some text
+
+        set_default_camera();
+        draw_text(format!("Camera pos: {:?}", camera.position).as_str(), 20., 20., 20., BLACK);
+
+        next_frame().await
+    }
+}
