@@ -1,12 +1,16 @@
 use macroquad::prelude::*;
-use ::rand::{rng, Rng};
-use tobj;
+use macroquad::rand::gen_range;
+use std::fs::File;
+use std::io::Write;
+use std::io::BufReader;
+use obj::{load_obj, Obj};
+use glam::{Mat3, Vec3};
 
 fn deg2rad(deg: f32) -> f32 {
     deg * std::f32::consts::PI / 180.0
 }
 
-fn draw_text_3d(camera: &FreeLookCamera, text: &str, world_pos: Vec3, projection: Mat4, base_scale: f32, color: Color) {
+fn draw_text_3d(camera: &FreeLookCamera, text: &str, world_pos: Vec3, projection: Mat4, base_scale: f32, color: Color, text_params: Option<TextParams>) {
     let screen_size = vec2(screen_width(), screen_height());
 
     // Convert world coordinates to 2D screen coordinates
@@ -18,73 +22,128 @@ fn draw_text_3d(camera: &FreeLookCamera, text: &str, world_pos: Vec3, projection
     let scale = (base_scale / depth).clamp(0.001, 5.0);
 
     let text_width = measure_text(text, None, 20, scale).width;
-    let text_height = measure_text(text, None, 20, scale).height;
-    
+    let text_height = measure_text("|", None, 20, scale).height;
+
     if camera.is_world_in_screen(world_pos, projection) {
-        draw_text(text, screen_pos.x - text_width / 2., screen_pos.y - text_height / 2., 20.0 * scale, color);
+        if let Some(params) = text_params {
+            draw_text_ex(text, screen_pos.x - text_width / 2., screen_pos.y - text_height / 2., TextParams {
+                font_size: (20.0 * scale) as u16,
+                color,
+                ..params
+            });
+        } else {
+            draw_text(text, screen_pos.x - text_width / 2., screen_pos.y - text_height / 2., 20.0 * scale, color);
+        }
     }
 }
 
-fn load_model(path: &str, offset: (f32, f32, f32), color: Color) -> Vec<Mesh> {
-    let mut meshes = Vec::new();
-    let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default()).unwrap();
+struct ModelLoader {
+    path: String,
+    offset: (f32, f32, f32),
+    color: Color,
+    scale: f32,
+    rotation: Vec3,
+    texture: Texture2D,
+}
+
+impl ModelLoader {
+    fn new(data: Vec<u8>) -> Self {
+        // New folder ".temp" to store temporary files incase it isn't here
+        std::fs::create_dir_all(".temp").unwrap();
+
+        let path = format!(".temp/{}.obj", random_string(10));
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&data).unwrap();
+
+        Self {
+            path,
+            offset: (0.0, 0.0, 0.0),
+            color: WHITE,
+            scale: 1.0,
+            rotation: vec3(0.0, 0.0, 0.0),
+            texture: Texture2D::empty(),
+        }
+    }
+
+    fn offset(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.offset = (x, y, z);
+        self
+    }
+
+    fn color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    fn scale(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    fn rotation(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.rotation = vec3(x, y, z);
+        self
+    }
     
-    for model in models {
-        let mesh = &model.mesh;
+    fn texture(mut self, texture: &Texture2D) -> Self {
+        self.texture = texture.clone();
+        self
+    }
+
+    fn load(self) -> Mesh {
+        let input = BufReader::new(File::open(&self.path).unwrap());
+        let obj: Obj = load_obj(input).unwrap();
 
         let mut vertices: Vec<Vertex> = Vec::new();
-        for i in 0..mesh.positions.len() / 3 {
-            let pos = vec3(
-                mesh.positions[i * 3] + offset.0,
-                mesh.positions[i * 3 + 1] + offset.1,
-                mesh.positions[i * 3 + 2] + offset.2,
+        let indices: Vec<u16> = obj.indices.iter().map(|&i| i as u16).collect();
+
+        // Convert rotation angles to radians
+        let rot_x = deg2rad(self.rotation.x);
+        let rot_y = deg2rad(self.rotation.y);
+        let rot_z = deg2rad(self.rotation.z);
+
+        // Create rotation matrices
+        let rot_x_mat = Mat3::from_rotation_x(rot_x);
+        let rot_y_mat = Mat3::from_rotation_y(rot_y);
+        let rot_z_mat = Mat3::from_rotation_z(rot_z);
+
+        for vertex in &obj.vertices {
+            let mut pos = vec3(
+                vertex.position[0] * self.scale,
+                vertex.position[1] * self.scale,
+                vertex.position[2] * self.scale,
             );
 
-            let normal = if mesh.normals.len() >= (i * 3 + 3) {
-                vec3(
-                    mesh.normals[i * 3],
-                    mesh.normals[i * 3 + 1],
-                    mesh.normals[i * 3 + 2],
-                )
-            } else {
-                vec3(0.0, 0.0, 1.0) // Default normal
-            };
+            // Apply rotations (Z * Y * X order)
+            pos = rot_z_mat * (rot_y_mat * (rot_x_mat * pos));
 
-            let uv = if mesh.texcoords.len() >= (i * 2 + 2) {
-                vec2(mesh.texcoords[i * 2], 1.0 - mesh.texcoords[i * 2 + 1]) // Flip V-axis
-            } else {
-                vec2(0.0, 0.0) // Default UV
-            };
+            // Apply translation (offset)
+            pos += vec3(self.offset.0, self.offset.1, self.offset.2);
+
+            let normal = vec3(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
 
             vertices.push(Vertex {
                 position: pos,
                 normal: vec4(normal.x, normal.y, normal.z, 0.0),
-                uv,
-                color: color.into()
+                uv: vec2(pos.x % 1.0, pos.y % 1.0),
+                color: self.color.into(),
             });
         }
-
-        let indices: Vec<u16> = mesh.indices.iter().map(|&i| i as u16).collect();
-
-        meshes.push(Mesh {
+        
+        Mesh {
             vertices,
             indices,
-            texture: None, // You can load a texture here if needed
-        });
+            texture: Some(self.texture),
+        }
     }
-
-    meshes
 }
 
 fn random_string(len: usize) -> String {
-    let mut rng = rng();
-    let mut s = String::new();
-    let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789~!@#$%^&*()`-_=+[{]}\\|;:'\",<.>/?";
-    for _ in 0..len {
-        let idx = rng.random_range(0..chars.len());
-        s.push(chars.chars().nth(idx).unwrap());
-    }
-    s
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789~!@#$%^&*()`-_=+[{]}\\|;:'\",<.>/?";
+    
+    (0..len)
+        .map(|_| CHARS[gen_range(0, CHARS.len())] as char)
+        .collect()
 }
 
 struct FreeLookCamera {
@@ -160,7 +219,7 @@ impl FreeLookCamera {
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Goofworld v0.1".to_owned(),
+        window_title: "Goofworld v1.1.3".to_owned(),
         fullscreen: true,
         ..Default::default()
     }
@@ -169,6 +228,30 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut camera = FreeLookCamera::new(vec3(0.0, 2.5, 5.0));
+
+    let planecat_texture_data = include_bytes!("../assets/planecat.png");
+    let planecat_texture = Texture2D::from_file_with_format(planecat_texture_data, Some(ImageFormat::Png));
+    let holycrackers_texture_data = include_bytes!("../assets/holycrackers.png");
+    let holycrackers_texture = Texture2D::from_file_with_format(holycrackers_texture_data, Some(ImageFormat::Png));
+    let glungus_texture_data = include_bytes!("../assets/glungus.png");
+    let glungus_texture = Texture2D::from_file_with_format(glungus_texture_data, Some(ImageFormat::Png));
+    let wood_texture_data = include_bytes!("../assets/wood.png");
+    let wood_texture = Texture2D::from_file_with_format(wood_texture_data, Some(ImageFormat::Png));
+    let table_model_data = include_bytes!("../assets/table.obj");
+    let table_model = ModelLoader::new(table_model_data.to_vec())
+        .offset(6., 0., -5.)
+        .texture(&wood_texture)
+        .scale(1.5)
+        .rotation(0., -15., 0.)
+        .load();
+    let chair_model_data = include_bytes!("../assets/chair.obj");
+    let chair_model = ModelLoader::new(chair_model_data.to_vec())
+        .offset(3.5, 0., -5.)
+        .color(Color::new(145. / 255., 53. / 255., 7. / 255., 1.))
+        .texture(&wood_texture)
+        .scale(1.)
+        .rotation(0., 18., 0.)
+        .load();
 
     let mut is_cursor_grabbed = true;
     
@@ -179,24 +262,35 @@ async fn main() {
     let mut green_y = 1.0;
     let mut is_green_going_up = true;
     
-    let planecat_texture = load_texture("assets/planecat.png").await.unwrap();
+    // let planecat_texture = load_texture("assets/planecat.png").await.unwrap();
     let mut planecat_x = -10.0;
     let mut is_planecat_going_right = true;
 
     let mut is_sneaking;
 
-    let holycrackers_texture = load_texture("assets/holycrackers.png").await.unwrap();
+    // let holycrackers_texture = load_texture("assets/holycrackers.png").await.unwrap();
 
-    let glungus_texture = load_texture("assets/glungus.png").await.unwrap();
+    // let glungus_texture = load_texture("assets/glungus.png").await.unwrap();
     let mut glungus_position = vec3(-4.0, 1.0, 0.0);
 
     let mut rainbow_color = Color::new(0., 0., 0., 1.);
     let mut is_rainbow_r_up = true;
     let mut is_rainbow_g_up = true;
     let mut is_rainbow_b_up = true;
-
-    // let table_model = load_model("assets/table.obj").await.unwrap();
-    let table_model = load_model("assets/table.obj", (6., -0.5, -5.), Color::new(0., 1., 0.65, 0.5));
+    // let wood_texture = load_texture("assets/wood.png").await.unwrap();
+    // let table_model = ModelLoader::new("assets/table.obj")
+    //     .offset(6., 0., -5.)
+    //     .texture(&wood_texture)
+    //     .scale(1.5)
+    //     .rotation(0., -15., 0.)
+    //     .load();
+    // let chair_model = ModelLoader::new("assets/chair.obj")
+    //     .offset(3.5, 0., -5.)
+    //     .color(darker_wood_color)
+    //     .texture(&wood_texture)
+    //     .scale(1.)
+    //     .rotation(0., 18., 0.)
+    //     .load();
 
     loop {
         clear_background(BLACK);
@@ -283,7 +377,12 @@ async fn main() {
             is_jumping = false;
         }
 
-        camera.position.y -= if is_sneaking { 0.5 } else { 0.0 };
+        camera.position.y -= if is_sneaking { 0.3 } else { 0.0 };
+
+        // Round the camera position to 0.01's
+        camera.position.x = (camera.position.x * 100.).round() / 100.;
+        camera.position.y = (camera.position.y * 100.).round() / 100.;
+        camera.position.z = (camera.position.z * 100.).round() / 100.;
         
         if green_y >= 4.0 {
             is_green_going_up = false;
@@ -386,9 +485,11 @@ async fn main() {
 
         draw_cube(vec3(planecat_x, 5.0, 0.0), vec3(2.0, 1.0, 1.0), Some(&planecat_texture), WHITE);
 
-        for mesh in table_model.iter() {
-            draw_mesh(mesh);
-        }
+        // for mesh in table_model.iter() {
+        //     draw_mesh(mesh);
+        // }
+        draw_mesh(&table_model);
+        draw_mesh(&chair_model);
 
         set_default_camera();
 
@@ -396,7 +497,10 @@ async fn main() {
         let projection = Mat4::perspective_rh_gl(100f32.to_radians(), screen_width() / screen_height(), 0.1, 100.0);
 
         if camera.is_world_in_screen(vec3(0.0, 10.0, 0.0), projection) {
-            draw_text_3d(&camera, format!("{} GOOFWORLD! {}", random_string(1), random_string(1)).as_str(), vec3(0.0, 10.0, 0.0), projection, 64., rainbow_color);
+            draw_text_3d(&camera, format!("{} GOOFWORLD! {}", random_string(2), random_string(2)).as_str(), vec3(0.0, 10.0, 0.0), projection, 64., rainbow_color, Some(TextParams {
+                rotation: deg2rad(4.0),
+                ..Default::default()
+            }));
         }
 
         // Draw glungus in 2D space, why? Because we can scale him based on distance from camera
@@ -430,8 +534,11 @@ async fn main() {
             draw_line(mouse_pos.0 - 10.0, mouse_pos.1, mouse_pos.0 + 10.0, mouse_pos.1, 2.0, WHITE);
             draw_line(mouse_pos.0, mouse_pos.1 - 10.0, mouse_pos.0, mouse_pos.1 + 10.0, 2.0, WHITE);
         }
-        
+
         next_frame().await;
     }
+
+    // Cleanup
+    std::fs::remove_dir_all(".temp").unwrap();
 }
 
